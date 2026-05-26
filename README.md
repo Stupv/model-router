@@ -65,14 +65,59 @@ python3 model_router.py
 # listening on http://127.0.0.1:9099
 ```
 
-### Point your client at it
+### Try it safely without touching your config
 
-Any client that speaks the Anthropic Messages API:
+Before wiring it into your daily setup, test with a wrapper script that isolates the environment variables to a single session. When the session exits, your real config is untouched.
+
+```bash
+#!/usr/bin/env bash
+# test-model-router.sh — launch a Claude Code session routed through the proxy.
+# Set your API keys before running, or source them from a .env file.
+
+set -euo pipefail
+
+# --- config -------------------------------------------------
+PROXY_PORT="${PROXY_PORT:-9099}"
+# Uncomment and adjust to your setup:
+# export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+# export KIMI_API_KEY="${KIMI_API_KEY:-}"
+# export MINIMAX_API_KEY="${MINIMAX_API_KEY:-}"
+# ------------------------------------------------------------
+
+# Health check — bail early if the proxy isn't running
+if ! curl -sf "http://127.0.0.1:${PROXY_PORT}/health" > /dev/null; then
+    echo "❌ Model Router not running on port ${PROXY_PORT}" >&2
+    echo "   Start it first: PROXY_PORT=${PROXY_PORT} python3 model_router.py &" >&2
+    exit 1
+fi
+
+echo "✓ Router healthy — routing through http://127.0.0.1:${PROXY_PORT}"
+
+# Isolate: these env vars live only for this command
+ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}" \
+ANTHROPIC_API_KEY="proxy-passthrough" \
+    exec claude "$@"
+```
+
+Save as `test-model-router.sh`, make it executable, and run:
+
+```bash
+chmod +x test-model-router.sh
+./test-model-router.sh
+```
+
+The environment variables vanish when Claude exits — your global `claude` config never sees them. If something breaks, the proxy isn't in the path for your normal sessions.
+
+### Point your client at it permanently
+
+Once you're comfortable it works, wire it in:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:9099
 export ANTHROPIC_API_KEY=proxy-passthrough  # any non-empty value
 ```
+
+Add those to your shell profile (`.bashrc`, `.zshrc`) or Claude Code's environment config for permanent routing.
 
 ### Health check
 
