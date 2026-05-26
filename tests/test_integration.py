@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import runpy
 import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -584,6 +585,31 @@ async def test_proxy_strips_reasoning_effort(app, aiohttp_client) -> None:
     call_kwargs = mock_session.request.call_args.kwargs
     body = json.loads(call_kwargs["data"])
     assert "reasoning_effort" not in body
+
+
+# ---------------------------------------------------------------------------
+# __main__ entry point
+# ---------------------------------------------------------------------------
+
+
+def test_main_entry_point(monkeypatch) -> None:
+    """Cover line 611: asyncio.run(main()) in the __name__ == '__main__' guard.
+
+    Uses runpy.run_module with run_name='__main__' to trigger the guard block,
+    then verifies asyncio.run was called with the main coroutine.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
+    monkeypatch.setenv("KIMI_API_KEY", "fake")
+    monkeypatch.setenv("MINIMAX_API_KEY", "fake")
+
+    # Capture that asyncio.run was called — we mock global asyncio.run
+    # because runpy may shadow module-level asyncio
+    with patch("asyncio.run") as mock_run:
+        runpy.run_module("model_router", run_name="__main__")
+
+    mock_run.assert_called_once()
+    (coro,) = mock_run.call_args[0]
+    assert asyncio.iscoroutine(coro)
 
 
 # ---------------------------------------------------------------------------
