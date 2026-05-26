@@ -1,6 +1,6 @@
 [project]
 name = "model-router"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model-aware routing proxy for Claude Code — maps model tiers to third-party Anthropic-compatible upstreams"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,7 +9,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "hypothesis>=6.100",
     "pytest>=8.0",
+    "pytest-aiohttp>=1.1",
     "pytest-asyncio>=0.24",
     "ruff>=0.4",
 ]

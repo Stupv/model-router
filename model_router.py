@@ -23,6 +23,7 @@ Then point Claude Code at it:
 
 Run as a systemd service: see /tmp/model-router.service (mv with sudo)
 """
+from __future__ import annotations
 
 import asyncio
 import json
@@ -30,9 +31,22 @@ import logging
 import os
 import signal
 import time
+from typing import Any, TypedDict
 
 import aiohttp
 from aiohttp import web
+
+
+class RouteConfig(TypedDict):
+    upstream: str
+    target_path: str
+    model_id: str
+    key_env: str
+    auth_type: str
+    name: str
+    timeout_s: int
+    connect_s: int
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +56,7 @@ log = logging.getLogger(__name__)
 
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "9099"))
 
-ROUTING_TABLE = {
+ROUTING_TABLE: dict[str, RouteConfig] = {
     "claude-opus-": {
         "upstream": "https://api.deepseek.com/anthropic",
         "target_path": "/v1/messages",
@@ -83,7 +97,7 @@ _EMPTY_THINKING = {"type": "thinking", "thinking": "", "signature": ""}
 _shutdown_event = asyncio.Event()
 
 
-def _strip_thinking_blocks(messages: list) -> list:
+def _strip_thinking_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Remove thinking/reasoning content blocks from message history.
 
     Kimi: requires `reasoning_content` to round-trip. DeepSeek: requires
@@ -108,7 +122,7 @@ def _strip_thinking_blocks(messages: list) -> list:
     return out
 
 
-def _sanitize_thinking_blocks_deepseek(messages: list) -> list:
+def _sanitize_thinking_blocks_deepseek(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure assistant messages have thinking blocks for DeepSeek.
 
     DeepSeek requires thinking blocks to round-trip for tool-use contexts.
@@ -162,7 +176,10 @@ def _strip_thinking_from_response_body(body: bytes) -> bytes:
     return body
 
 
-async def _filter_sse_deepseek(upstream_reader, client_writer) -> None:
+async def _filter_sse_deepseek(
+    upstream_reader: Any,
+    client_writer: web.StreamResponse,
+) -> None:
     """Filter thinking blocks out of a DeepSeek SSE stream before forwarding.
 
     We buffer incoming chunks, split on double-newline to find complete SSE
@@ -234,13 +251,13 @@ async def _filter_sse_deepseek(upstream_reader, client_writer) -> None:
         )
 
 
-def _strip_cache_control(body: dict) -> None:
+def _strip_cache_control(body: dict[str, Any]) -> None:
     """Remove cache_control from all content blocks.
 
     Prompt caching is Anthropic-only.
     """
 
-    def _clean(blocks):
+    def _clean(blocks: Any) -> None:
         if isinstance(blocks, list):
             for block in blocks:
                 if isinstance(block, dict):
@@ -254,7 +271,7 @@ def _strip_cache_control(body: dict) -> None:
             _clean(msg.get("content"))
 
 
-def _route(model: str) -> tuple[str, dict]:
+def _route(model: str) -> tuple[str, RouteConfig]:
     """Return (tier_name, cfg) for a model string. Fuzzy-matches on tier keyword."""
     if not isinstance(model, str):
         raise ValueError(f"unknown model tier: {model}")
@@ -269,7 +286,7 @@ def _route(model: str) -> tuple[str, dict]:
         raise ValueError(f"unknown model tier: {model}")
 
 
-def _build_forward_headers(cfg: dict, raw_request_headers) -> dict:
+def _build_forward_headers(cfg: RouteConfig, raw_request_headers: Any) -> dict[str, str]:
     """Build headers to forward to the upstream based on auth_type."""
     api_key = os.environ.get(cfg["key_env"], "")
     if cfg["auth_type"] == "x-api-key":
@@ -510,14 +527,13 @@ async def _proxy(request: web.Request) -> web.StreamResponse | web.Response:
 
 async def _health(_: web.Request) -> web.Response:
     """Return health status for all configured upstream tiers."""
-    tiers = {}
+    tiers: dict[str, dict[str, Any]] = {}
     all_present = True
     for prefix, cfg in ROUTING_TABLE.items():
-        tier_name = prefix.replace("claude-", "").rstrip("-")
-        key_present = bool(os.environ.get(cfg["key_env"]))
+        key_present: bool = bool(os.environ.get(cfg["key_env"]))
         if not key_present:
             all_present = False
-        tiers[tier_name] = {
+        tiers[prefix.replace("claude-", "").rstrip("-")] = {
             "upstream": cfg["name"],
             "key_present": key_present,
         }
@@ -535,10 +551,10 @@ def validate_config() -> None:
     if not (1024 <= PROXY_PORT <= 65535):
         raise SystemExit(f"PROXY_PORT must be in 1024-65535, got {PROXY_PORT}")
 
-    missing = []
-    confirmed = []
+    missing: list[str] = []
+    confirmed: list[str] = []
     for cfg in ROUTING_TABLE.values():
-        key = os.environ.get(cfg["key_env"], "")
+        key: str = os.environ.get(cfg["key_env"], "")
         if not key:
             missing.append(cfg["name"])
         else:

@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 import model_router
 
@@ -369,3 +370,286 @@ def test_validate_config_passes_when_all_keys_present(monkeypatch) -> None:
     # Must reload ROUTING_TABLE or just call validate_config directly since
     # ROUTING_TABLE references the env vars by name.
     model_router.validate_config()
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests (Hypothesis)
+# ---------------------------------------------------------------------------
+
+# -- _route() ---------------------------------------------------------------
+
+
+@given(
+    prefix=st.text(min_size=0, max_size=20),
+    suffix=st.text(min_size=0, max_size=20),
+)
+@settings(max_examples=50)
+def test_route_opus_keyword(prefix: str, suffix: str) -> None:
+    model = prefix + "opus" + suffix
+    tier, cfg = model_router._route(model)
+    assert tier == "opus"
+    assert cfg["name"] == "DeepSeek"
+
+
+@given(
+    prefix=st.text(min_size=0, max_size=20),
+    suffix=st.text(min_size=0, max_size=20),
+)
+@settings(max_examples=50)
+def test_route_sonnet_keyword(prefix: str, suffix: str) -> None:
+    model = prefix + "sonnet" + suffix
+    tier, cfg = model_router._route(model)
+    assert tier == "sonnet"
+    assert cfg["name"] == "Kimi"
+
+
+@given(
+    prefix=st.text(min_size=0, max_size=20),
+    suffix=st.text(min_size=0, max_size=20),
+)
+@settings(max_examples=50)
+def test_route_haiku_keyword(prefix: str, suffix: str) -> None:
+    model = prefix + "haiku" + suffix
+    m = model.lower()
+    # If the generated string also contains "sonnet", _route() will match sonnet first
+    if "sonnet" in m:
+        tier, cfg = model_router._route(model)
+        assert tier == "sonnet"
+        assert cfg["name"] == "Kimi"
+    else:
+        tier, cfg = model_router._route(model)
+        assert tier == "haiku"
+        assert cfg["name"] == "MiniMax"
+
+
+@given(model=st.text(min_size=1, max_size=100))
+@settings(max_examples=50)
+def test_route_no_keyword_raises(model: str) -> None:
+    m = model.lower()
+    assume = "opus" not in m and "sonnet" not in m and "haiku" not in m
+    if not assume:
+        return
+    with pytest.raises(ValueError, match="unknown model tier"):
+        model_router._route(model)
+
+
+@given(model=st.text(min_size=1, max_size=100))
+@settings(max_examples=50)
+def test_route_idempotent(model: str) -> None:
+    try:
+        r1 = model_router._route(model)
+        r2 = model_router._route(model)
+    except ValueError:
+        return
+    assert r1 == r2
+
+
+# -- _strip_thinking_blocks() -----------------------------------------------
+
+content_block = st.one_of(
+    st.fixed_dictionaries(
+        {"type": st.just("text"), "text": st.text(min_size=0, max_size=50)}
+    ),
+    st.fixed_dictionaries(
+        {
+            "type": st.just("thinking"),
+            "thinking": st.text(min_size=0, max_size=50),
+            "signature": st.text(min_size=0, max_size=20),
+        }
+    ),
+    st.fixed_dictionaries(
+        {
+            "type": st.just("redacted_thinking"),
+            "data": st.text(min_size=0, max_size=50),
+        }
+    ),
+    st.fixed_dictionaries(
+        {
+            "type": st.just("reasoning"),
+            "reasoning": st.text(min_size=0, max_size=50),
+        }
+    ),
+)
+
+message_with_list_content = st.fixed_dictionaries(
+    {
+        "role": st.sampled_from(["user", "assistant", "system"]),
+        "content": st.lists(content_block, min_size=0, max_size=10),
+    }
+)
+
+message_with_string_content = st.fixed_dictionaries(
+    {
+        "role": st.sampled_from(["user", "assistant", "system"]),
+        "content": st.text(min_size=0, max_size=100),
+    }
+)
+
+message_strategy = st.one_of(
+    message_with_list_content,
+    message_with_string_content,
+    st.integers(),
+    st.text(),
+)
+
+
+@given(messages=st.lists(message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_strip_thinking_blocks_output_never_longer(messages: list) -> None:
+    result = model_router._strip_thinking_blocks(messages)
+    assert len(result) <= len(messages)
+
+
+@given(messages=st.lists(message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_strip_thinking_blocks_idempotent(messages: list) -> None:
+    once = model_router._strip_thinking_blocks(messages)
+    twice = model_router._strip_thinking_blocks(once)
+    assert once == twice
+
+
+@given(messages=st.lists(message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_strip_thinking_blocks_no_thinking_remains(messages: list) -> None:
+    result = model_router._strip_thinking_blocks(messages)
+    for msg in result:
+        if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+            for block in msg["content"]:
+                if isinstance(block, dict):
+                    assert block.get("type") not in model_router._THINKING_TYPES
+
+
+@given(messages=st.lists(message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_strip_thinking_blocks_non_dict_passthrough(messages: list) -> None:
+    result = model_router._strip_thinking_blocks(messages)
+    for orig, out in zip(messages, result):
+        if not isinstance(orig, dict):
+            assert orig == out
+
+
+# -- _strip_cache_control() -------------------------------------------------
+
+cache_control_block = st.one_of(
+    st.fixed_dictionaries(
+        {"type": st.just("text"), "text": st.text(min_size=0, max_size=30)}
+    ),
+    st.fixed_dictionaries(
+        {
+            "type": st.just("text"),
+            "text": st.text(min_size=0, max_size=30),
+            "cache_control": st.fixed_dictionaries(
+                {"type": st.just("ephemeral")}
+            ),
+        }
+    ),
+)
+
+message_body = st.fixed_dictionaries(
+    {
+        "role": st.sampled_from(["user", "assistant", "system"]),
+        "content": st.one_of(
+            st.text(min_size=0, max_size=50),
+            st.lists(cache_control_block, min_size=0, max_size=5),
+        ),
+    }
+)
+
+request_body = st.fixed_dictionaries(
+    {
+        "system": st.one_of(
+            st.none(),
+            st.lists(cache_control_block, min_size=0, max_size=5),
+        ),
+        "messages": st.lists(message_body, min_size=0, max_size=10),
+    }
+)
+
+
+def _has_cache_control(obj):
+    """Return True if any dict in the nested structure has a cache_control key."""
+    if isinstance(obj, dict):
+        if "cache_control" in obj:
+            return True
+        return any(_has_cache_control(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_cache_control(item) for item in obj)
+    return False
+
+
+@given(body=request_body)
+@settings(max_examples=50)
+def test_strip_cache_control_removes_all(body: dict) -> None:
+    model_router._strip_cache_control(body)
+    assert not _has_cache_control(body)
+
+
+@given(body=request_body)
+@settings(max_examples=50)
+def test_strip_cache_control_no_op_when_absent(body: dict) -> None:
+    if _has_cache_control(body):
+        return
+    original = json.dumps(body, sort_keys=True)
+    model_router._strip_cache_control(body)
+    after = json.dumps(body, sort_keys=True)
+    assert original == after
+
+
+# -- _sanitize_thinking_blocks_deepseek() -----------------------------------
+
+assistant_message_with_list = st.fixed_dictionaries(
+    {
+        "role": st.just("assistant"),
+        "content": st.lists(content_block, min_size=0, max_size=10),
+    }
+)
+
+assistant_message_with_string = st.fixed_dictionaries(
+    {
+        "role": st.just("assistant"),
+        "content": st.text(min_size=0, max_size=100),
+    }
+)
+
+non_assistant_message = st.fixed_dictionaries(
+    {
+        "role": st.sampled_from(["user", "system"]),
+        "content": st.one_of(
+            st.text(min_size=0, max_size=100),
+            st.lists(content_block, min_size=0, max_size=5),
+        ),
+    }
+)
+
+deepseek_message_strategy = st.one_of(
+    assistant_message_with_list,
+    assistant_message_with_string,
+    non_assistant_message,
+    st.integers(),
+    st.text(),
+)
+
+
+@given(messages=st.lists(deepseek_message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_sanitize_assistant_has_thinking_block(messages: list) -> None:
+    result = model_router._sanitize_thinking_blocks_deepseek(messages)
+    for msg in result:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("content"), list)
+        ):
+            assert any(
+                isinstance(b, dict) and b.get("type") == "thinking"
+                for b in msg["content"]
+            )
+
+
+@given(messages=st.lists(deepseek_message_strategy, min_size=0, max_size=20))
+@settings(max_examples=50)
+def test_sanitize_non_assistant_unchanged(messages: list) -> None:
+    result = model_router._sanitize_thinking_blocks_deepseek(messages)
+    for orig, out in zip(messages, result):
+        if isinstance(orig, dict) and orig.get("role") != "assistant":
+            assert orig == out
