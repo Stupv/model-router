@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Model-aware routing proxy for DeepSeek / Kimi / MiniMax Anthropic-compat endpoints.
+"""Configurable routing proxy — maps Claude model tiers to upstream LLM providers.
 
-Extends kimi-proxy.py with a tiered routing table:
-  - claude-opus-*   → DeepSeek
-  - claude-sonnet-* → Kimi
-  - claude-haiku-*  → MiniMax
+A single ANTHROPIC_BASE_URL, multiple backends. The router inspects the
+incoming model name and forwards to the matching upstream with the correct
+auth scheme, headers, and body transformations. The upstream just needs to
+speak an Anthropic-compatible wire format.
 
-Preserves all working logic from kimi-proxy.py (thinking disable, thinking-block
-stripping, streaming) and adds per-upstream timeouts, auth schemes, health checks,
-config validation, graceful shutdown, and a request semaphore.
+Capabilities:
+  - Tiered model routing (prefix-based, configurable)
+  - Per-upstream auth (x-api-key / bearer)
+  - Per-upstream timeouts and connect timeouts
+  - Thinking / reasoning block sanitisation (strip, preserve, or stub per upstream)
+  - Anthropic-specific field stripping (cache_control, reasoning_effort)
+  - SSE stream filtering for thinking-block events
+  - Health endpoint (GET /health) with per-upstream key status
+  - Concurrency bounding (semaphore — 503 when at capacity)
+  - Graceful shutdown on SIGTERM / SIGINT
+  - Startup config validation (port range, required keys)
 
 Usage:
-  PROXY_PORT=9099 \
-  KIMI_API_KEY=... \
-  DEEPSEEK_API_KEY=... \
-  MINIMAX_API_KEY=... \
-  python3 ~/scripts/model_router.py
+  PROXY_PORT=9099 UPSTREAM_A_KEY=... UPSTREAM_B_KEY=... python3 model_router.py
 
-Then point Claude Code at it:
+Point your Anthropic client at it:
   ANTHROPIC_BASE_URL=http://127.0.0.1:9099
-  ANTHROPIC_API_KEY=proxy-passthrough   # any non-empty string
+  ANTHROPIC_API_KEY=any-non-empty-string
 
-Run as a systemd service: see /tmp/model-router.service (mv with sudo)
+See README.md for a wrapper script and systemd service template.
 """
 from __future__ import annotations
 
